@@ -1,0 +1,7 @@
+flask==1.1.2
+werkzeug==1.0.1
+rdkit==2022.9.5
+numpy==1.21.0
+scikit-learn==1.0.2
+joblib==1.1.0
+gunicorn==20.1.0
