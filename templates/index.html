@@ -550,13 +550,55 @@
                 }
                 
                 let resultsHtml = '';
-                for (const [property, value] of Object.entries(data)) {
-                    if (property !== 'smiles') {
+                
+                // First add a section for model predictions
+                resultsHtml += `<h5 class="mb-3"><i class="fas fa-brain me-2"></i>Predicted Properties</h5>`;
+                
+                // Check if we have any model predictions
+                const modelProperties = ['logSolubility', 'alpha', 'gap', 'homo', 'lumo', 'mu', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298'];
+                let hasModelPredictions = false;
+                
+                // Add model predictions
+                for (const property of modelProperties) {
+                    if (property in data) {
+                        hasModelPredictions = true;
+                        const value = data[property];
+                        const units = data[`${property}_units`] || '';
                         resultsHtml += `
                         <div class="property-card">
                             <div class="property-name">${property}</div>
                             <div>
                                 <span class="property-value">${typeof value === 'number' ? value.toFixed(2) : value}</span>
+                                ${units ? `<span class="property-unit">${units}</span>` : ''}
+                            </div>
+                        </div>`;
+                    }
+                }
+                
+                // If no model predictions were found
+                if (!hasModelPredictions) {
+                    resultsHtml += `
+                    <div class="alert alert-warning">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        No model predictions available. Models may not be loaded.
+                    </div>`;
+                }
+                
+                // Add a section for RDKit descriptors
+                resultsHtml += `<h5 class="mt-4 mb-3"><i class="fas fa-flask me-2"></i>Molecular Descriptors</h5>`;
+                
+                // Add RDKit descriptors
+                const descriptors = ['MolWt', 'logP', 'TPSA', 'NumHAcceptors', 'NumHDonors'];
+                for (const property of descriptors) {
+                    if (property in data) {
+                        const value = data[property];
+                        const units = data[`${property}_units`] || '';
+                        resultsHtml += `
+                        <div class="property-card">
+                            <div class="property-name">${property}</div>
+                            <div>
+                                <span class="property-value">${typeof value === 'number' ? value.toFixed(2) : value}</span>
+                                ${units ? `<span class="property-unit">${units}</span>` : ''}
                             </div>
                         </div>`;
                     }
@@ -617,13 +659,55 @@
                     throw new Error(data.error);
                 }
                 let resultsHtml = '';
-                for (const [property, value] of Object.entries(data)) {
-                    if (property !== 'smiles') {
+                
+                // First add a section for model predictions
+                resultsHtml += `<h5 class="mb-3"><i class="fas fa-brain me-2"></i>Predicted Properties</h5>`;
+                
+                // Check if we have any model predictions
+                const modelProperties = ['logSolubility', 'alpha', 'gap', 'homo', 'lumo', 'mu', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298'];
+                let hasModelPredictions = false;
+                
+                // Add model predictions
+                for (const property of modelProperties) {
+                    if (property in data) {
+                        hasModelPredictions = true;
+                        const value = data[property];
+                        const units = data[`${property}_units`] || '';
                         resultsHtml += `
                         <div class="property-card">
                             <div class="property-name">${property}</div>
                             <div>
                                 <span class="property-value">${typeof value === 'number' ? value.toFixed(2) : value}</span>
+                                ${units ? `<span class="property-unit">${units}</span>` : ''}
+                            </div>
+                        </div>`;
+                    }
+                }
+                
+                // If no model predictions were found
+                if (!hasModelPredictions) {
+                    resultsHtml += `
+                    <div class="alert alert-warning">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        No model predictions available. Models may not be loaded.
+                    </div>`;
+                }
+                
+                // Add a section for RDKit descriptors
+                resultsHtml += `<h5 class="mt-4 mb-3"><i class="fas fa-flask me-2"></i>Molecular Descriptors</h5>`;
+                
+                // Add RDKit descriptors
+                const descriptors = ['MolWt', 'logP', 'TPSA', 'NumHAcceptors', 'NumHDonors'];
+                for (const property of descriptors) {
+                    if (property in data) {
+                        const value = data[property];
+                        const units = data[`${property}_units`] || '';
+                        resultsHtml += `
+                        <div class="property-card">
+                            <div class="property-name">${property}</div>
+                            <div>
+                                <span class="property-value">${typeof value === 'number' ? value.toFixed(2) : value}</span>
+                                ${units ? `<span class="property-unit">${units}</span>` : ''}
                             </div>
                         </div>`;
                     }

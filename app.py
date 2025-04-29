@@ -43,43 +43,74 @@ property_info = {
 }
 
 def load_models():
+    print(f"Looking for models in directory: {model_dir}")
+    if not os.path.exists(model_dir):
+        print(f"Warning: Model directory {model_dir} does not exist!")
+        return
+        
     # Load ESOL models
     esol_dir = os.path.join(model_dir, 'esol')
     if os.path.exists(esol_dir):
+        print(f"Found ESOL directory: {esol_dir}")
         load_model_set(esol_dir, 'logSolubility')
+    else:
+        print(f"Warning: ESOL directory {esol_dir} does not exist!")
     
     # Load QM9 models
     qm9_dir = os.path.join(model_dir, 'qm9')
     if os.path.exists(qm9_dir):
+        print(f"Found QM9 directory: {qm9_dir}")
         qm9_properties = [
             'alpha', 'gap', 'homo', 'lumo', 'mu', 
             'r2', 'zpve', 'u0', 'u298', 'h298', 'g298'
         ]
         for prop in qm9_properties:
             load_model_set(qm9_dir, prop)
+    else:
+        print(f"Warning: QM9 directory {qm9_dir} does not exist!")
     
-    print(f"Loaded {len(models)} models: {list(models.keys())}")
+    if not models:
+        print("Warning: No models were loaded successfully!")
+    else:
+        print(f"Successfully loaded {len(models)} models: {list(models.keys())}")
 
 def load_model_set(directory, property_name):
     model_path = os.path.join(directory, f"{property_name}_model.pkl")
     scaler_path = os.path.join(directory, f"{property_name}_scaler.pkl")
     params_path = os.path.join(directory, f"{property_name}_params.json")
     
+    print(f"Checking for model files for {property_name}:")
+    print(f"  - Model: {model_path} (exists: {os.path.exists(model_path)})")
+    print(f"  - Scaler: {scaler_path} (exists: {os.path.exists(scaler_path)})")
+    print(f"  - Params: {params_path} (exists: {os.path.exists(params_path)})")
+    
     if os.path.exists(model_path):
         try:
             models[property_name] = joblib.load(model_path)
-            print(f"Loaded model for {property_name}")
+            print(f"Successfully loaded model for {property_name}")
             
             if os.path.exists(scaler_path):
                 scalers[property_name] = joblib.load(scaler_path)
-                print(f"Loaded scaler for {property_name}")
+                print(f"Successfully loaded scaler for {property_name}")
+            else:
+                print(f"Warning: No scaler found for {property_name}")
             
             if os.path.exists(params_path):
                 with open(params_path, 'r') as f:
                     params[property_name] = json.load(f)
-                print(f"Loaded parameters for {property_name}")
+                print(f"Successfully loaded parameters for {property_name}")
+            else:
+                print(f"Warning: No parameters found for {property_name}")
+                
+            return True
         except Exception as e:
-            print(f"Error loading {property_name} model set: {e}")
+            print(f"Error loading {property_name} model set: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+    else:
+        print(f"Error: Model file for {property_name} does not exist")
+        return False
 
 def calculate_features(smiles):
     try:
@@ -87,9 +118,9 @@ def calculate_features(smiles):
         if mol is None:
             return None
         
-        # Calculate Morgan fingerprints
-        fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=2048)
-        fp_array = np.zeros((1, 2048))
+        # Calculate Morgan fingerprints with 2055 bits to match the trained models
+        fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=2055)
+        fp_array = np.zeros((1, 2055))
         ConvertToNumpyArray(fp, fp_array[0])
         
         # Calculate basic RDKit descriptors
@@ -133,22 +164,51 @@ def predict():
         if not smiles:
             return jsonify({'error': 'No SMILES provided'}), 400
 
+        print(f"Processing prediction request for SMILES: {smiles}")
         features = calculate_features(smiles)
         if features is None:
             return jsonify({'error': 'Invalid SMILES or calculation error'}), 400
 
+        # Start with basic descriptors
         results = features['descriptors'].copy()
         results['smiles'] = smiles
+        
+        # Add units to descriptors
+        # Create a list of keys to avoid 'dictionary changed size during iteration' error
+        for prop in list(results.keys()):
+            if prop in property_info and 'units' in property_info[prop]:
+                results[f"{prop}_units"] = property_info[prop]['units']
 
-        for prop, model in models.items():
+        # Check if we have any models loaded
+        if not models:
+            print("Warning: No models are loaded, only returning RDKit descriptors")
+            return jsonify({
+                **results,
+                'warning': 'No prediction models are loaded. Only returning RDKit descriptors.'
+            })
+
+        print(f"Making predictions with {len(models)} loaded models")
+        # Use list() to create a copy of items to avoid potential dictionary modification issues
+        for prop, model in list(models.items()):
             try:
                 X = features['fingerprints']
                 if prop in scalers:
                     X = scalers[prop].transform(X)
                 prediction = model.predict(X)[0]
                 results[prop] = float(prediction)
+                
+                # Add units and dataset info if available
+                if prop in property_info:
+                    if 'units' in property_info[prop]:
+                        results[f"{prop}_units"] = property_info[prop]['units']
+                    if 'description' in property_info[prop]:
+                        results[f"{prop}_description"] = property_info[prop]['description']
+                
+                print(f"Predicted {prop}: {results[prop]}")
             except Exception as e:
-                print(f"Error predicting {prop}: {e}")
+                print(f"Error predicting {prop}: {str(e)}")
+                import traceback
+                traceback.print_exc()
 
         return jsonify(results)
     except Exception as e:
