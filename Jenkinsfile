@@ -1,5 +1,11 @@
 pipeline {
     agent any
+    
+    options {
+        timeout(time: 1, unit: 'HOURS')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
 
     environment {
         // EC2 connection details
@@ -27,53 +33,29 @@ pipeline {
         
         stage('Sync Code to EC2') {
             steps {
-                script {
-                    withCredentials([
-                        string(credentialsId: 'ec2-host-ip', variable: 'EC2_HOST'),
-                        sshUserPrivateKey(credentialsId: 'ec2-docker-deploy', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')
-                    ]) {
-                        // Create a temporary key file with proper permissions
-                        bat """
-                            echo "Creating temporary key file with proper permissions"
-                            powershell -Command "Copy-Item -Path '$SSH_KEY' -Destination 'temp_ssh_key.pem'"
-                            powershell -Command "icacls 'temp_ssh_key.pem' /inheritance:r"
-                            powershell -Command "icacls 'temp_ssh_key.pem' /grant:r 'SYSTEM:R' /grant:r 'Administrators:R' /grant:r '${env.COMPUTERNAME}\\Jenkins:F'"
-                        """
-                        
-                        // Create a tar archive of the workspace
-                        bat "tar -czf molecules-app.tar.gz --exclude='.git' --exclude='node_modules' --exclude='__pycache__' ."
-                        
-                        // Ensure the target directory exists on EC2
-                        bat """
-                            set SSH_AUTH_SOCK=
-                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "mkdir -p ${APP_DIR}"
-                        """
-                        
-                        // Transfer the archive to EC2 and extract it
-                        bat """
-                            set SSH_AUTH_SOCK=
-                            scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" molecules-app.tar.gz ${SSH_USER}@%EC2_HOST%:~/molecules-app.tar.gz
-                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "tar -xzf ~/molecules-app.tar.gz -C ${APP_DIR} && rm ~/molecules-app.tar.gz"
-                        """
-                        
-                        // Close any file handles that might be using the key file
-                        bat """
-                            powershell -Command "Start-Sleep -s 2"
-                        """
-                    }
+                sshagent(['ec2-docker-deploy']) {
+                    // Create a tar archive of the workspace
+                    bat "tar -czf molecules-app.tar.gz --exclude='.git' --exclude='node_modules' --exclude='__pycache__' ."
+                    
+                    // Ensure the target directory exists on EC2
+                    bat """
+                        ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no ${EC2_USER}@%EC2_HOST% "mkdir -p ${APP_DIR}"
+                    """
+                    
+                    // Transfer the archive to EC2 and extract it
+                    bat """
+                        scp -o StrictHostKeyChecking=no molecules-app.tar.gz ${EC2_USER}@%EC2_HOST%:~/molecules-app.tar.gz
+                        ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no ${EC2_USER}@%EC2_HOST% "tar -xzf ~/molecules-app.tar.gz -C ${APP_DIR} && rm ~/molecules-app.tar.gz"
+                    """
                 }
             }
         }
 
         stage('Deploy to EC2') {
             steps {
-                script {
-                    withCredentials([
-                        string(credentialsId: 'ec2-host-ip', variable: 'EC2_HOST'),
-                        sshUserPrivateKey(credentialsId: 'ec2-docker-deploy', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')
-                    ]) {
-                        // Create deployment script
-                        writeFile file: 'deploy_commands.sh', text: """#!/bin/bash
+                sshagent(['ec2-docker-deploy']) {
+                    // Create deployment script
+                    writeFile file: 'deploy_commands.sh', text: """#!/bin/bash
 cd ${APP_DIR}
 echo 'Building Docker image...'
 docker build -t ${DOCKER_IMAGE} .
@@ -85,30 +67,19 @@ docker run -d --name ${CONTAINER_NAME} -p ${APP_PORT}:${APP_PORT} ${DOCKER_IMAGE
 echo 'Container started successfully!'
 """
 
-                        // Transfer deployment script and execute it
-                        bat """
-                            set SSH_AUTH_SOCK=
-                            scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" deploy_commands.sh ${SSH_USER}@%EC2_HOST%:~/deploy_commands.sh
-                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "chmod +x ~/deploy_commands.sh && ~/deploy_commands.sh"
-                        """
-                        
-                        // Close any file handles that might be using the key file
-                        bat """
-                            powershell -Command "Start-Sleep -s 2"
-                        """
-                    }
+                    // Transfer deployment script and execute it
+                    bat """
+                        scp -o StrictHostKeyChecking=no deploy_commands.sh ${EC2_USER}@%EC2_HOST%:~/deploy_commands.sh
+                        ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no ${EC2_USER}@%EC2_HOST% "chmod +x ~/deploy_commands.sh && ~/deploy_commands.sh"
+                    """
                 }
             }
         }
 
         stage('Push to Docker Hub') {
             steps {
-                script {
-                    withCredentials([
-                        string(credentialsId: 'ec2-host-ip', variable: 'EC2_HOST'),
-                        sshUserPrivateKey(credentialsId: 'ec2-docker-deploy', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
-                        usernamePassword(credentialsId: 'docker_hub', usernameVariable: 'DOCKER_HUB_USERNAME', passwordVariable: 'DOCKER_HUB_PASSWORD')
-                    ]) {
+                sshagent(['ec2-docker-deploy']) {
+                    withCredentials([usernamePassword(credentialsId: 'docker_hub', usernameVariable: 'DOCKER_HUB_USERNAME', passwordVariable: 'DOCKER_HUB_PASSWORD')]) {
                         // Create push script
                         writeFile file: 'push_commands.sh', text: """#!/bin/bash
 echo 'Logging in to Docker Hub...'
@@ -122,15 +93,8 @@ docker logout
 
                         // Transfer push script and execute it
                         bat """
-                            set SSH_AUTH_SOCK=
-                            scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" push_commands.sh ${SSH_USER}@%EC2_HOST%:~/push_commands.sh
-                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "chmod +x ~/push_commands.sh && ~/push_commands.sh"
-                        """
-                        
-                        // Close any file handles and try to delete the file with enhanced permissions
-                        bat """
-                            powershell -Command "Start-Sleep -s 5"
-                            powershell -Command "if (Test-Path 'temp_ssh_key.pem') { try { [System.IO.File]::SetAttributes('temp_ssh_key.pem', [System.IO.FileAttributes]::Normal); Remove-Item -Path 'temp_ssh_key.pem' -Force -ErrorAction SilentlyContinue } catch { Write-Host 'Could not delete file, will be handled in post actions' } }"
+                            scp -o StrictHostKeyChecking=no push_commands.sh ${EC2_USER}@%EC2_HOST%:~/push_commands.sh
+                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no ${EC2_USER}@%EC2_HOST% "chmod +x ~/push_commands.sh && ~/push_commands.sh"
                         """
                     }
                 }
@@ -140,10 +104,10 @@ docker logout
 
     post {
         success {
-            echo " Deployment completed successfully!"
+            echo "Deployment completed successfully!"
         }
         failure {
-            echo " Deployment failed! Check the logs."
+            echo "Deployment failed! Check the logs."
             script {
                 def recipients = emailextrecipients([[$class: 'DevelopersRecipientProvider']])
                 if (recipients) {
@@ -157,15 +121,13 @@ docker logout
             }
         }
         always {
-            // Clean up temporary files before cleaning workspace with improved error handling
+            // Clean up temporary files before cleaning workspace
             bat """
-                powershell -Command "if (Test-Path 'temp_ssh_key.pem') { try { Start-Sleep -s 2; [System.IO.File]::SetAttributes('temp_ssh_key.pem', [System.IO.FileAttributes]::Normal); Remove-Item -Path 'temp_ssh_key.pem' -Force -ErrorAction SilentlyContinue } catch { Write-Host 'Failed to remove temp_ssh_key.pem but continuing cleanup' } }"
-                powershell -Command "if (Test-Path 'deploy_commands.sh') { Remove-Item -Path 'deploy_commands.sh' -Force -ErrorAction SilentlyContinue }"
-                powershell -Command "if (Test-Path 'push_commands.sh') { Remove-Item -Path 'push_commands.sh' -Force -ErrorAction SilentlyContinue }"
-                powershell -Command "if (Test-Path 'molecules-app.tar.gz') { Remove-Item -Path 'molecules-app.tar.gz' -Force -ErrorAction SilentlyContinue }"
+                powershell -Command "try { if (Test-Path 'deploy_commands.sh') { Remove-Item -Path 'deploy_commands.sh' -Force -ErrorAction SilentlyContinue } } catch {}"
+                powershell -Command "try { if (Test-Path 'push_commands.sh') { Remove-Item -Path 'push_commands.sh' -Force -ErrorAction SilentlyContinue } } catch {}"
+                powershell -Command "try { if (Test-Path 'molecules-app.tar.gz') { Remove-Item -Path 'molecules-app.tar.gz' -Force -ErrorAction SilentlyContinue } } catch {}"
             """
             cleanWs(disableDeferredWipeout: true, deleteDirs: true)
         }
     }
 }
-
