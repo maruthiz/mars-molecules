@@ -19,6 +19,98 @@ pipeline {
             }
         }
 
+        stage('Prepare Files') {
+            steps {
+                // Create .dockerignore file to exclude unnecessary files from Docker build context
+                writeFile file: '.dockerignore', text: '''
+.git
+.git/
+.gitignore
+.gitattributes
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.log
+logs/
+temp_*
+node_modules/
+'''
+            }
+        }
+
+        stage('Cleanup EC2') {
+            steps {
+                script {
+                    withCredentials([
+                        string(credentialsId: 'ec2-host-ip', variable: 'EC2_HOST'),
+                        sshUserPrivateKey(credentialsId: 'ec2-docker-deploy', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')
+                    ]) {
+                        writeFile file: 'cleanup_ec2.sh', text: '''#!/bin/bash
+# Use this script to clean up your EC2 instance before deploying
+set -e
+
+# Clear Docker system
+echo "Cleaning up Docker system..."
+docker system prune -af || sudo docker system prune -af
+
+# Clear Docker volumes
+echo "Removing unused Docker volumes..."
+docker volume prune -f || sudo docker volume prune -f
+
+# Check disk space
+echo "Current disk space usage:"
+df -h
+
+# Clean up unnecessary files (adjust as needed)
+echo "Cleaning up unnecessary files..."
+rm -rf ~/.cache/*
+rm -rf /tmp/*
+rm -rf ~/molecules/.git
+
+# Clean package managers cache
+echo "Cleaning package manager cache..."
+sudo apt-get clean
+sudo apt-get autoremove -y
+
+# Final disk space check
+echo "Disk space after cleanup:"
+df -h
+'''
+
+                        bat """
+                            powershell -Command "Copy-Item -Path '$SSH_KEY' -Destination 'temp_ssh_key.pem'"
+                            powershell -Command "icacls 'temp_ssh_key.pem' /inheritance:r"
+                            powershell -Command "icacls 'temp_ssh_key.pem' /grant:r 'SYSTEM:R' /grant:r 'Administrators:R'"
+                        """
+
+                        bat """
+                            set SSH_AUTH_SOCK=
+                            scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" cleanup_ec2.sh ${SSH_USER}@%EC2_HOST%:~/cleanup_ec2.sh
+                            ssh -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "chmod +x ~/cleanup_ec2.sh && ~/cleanup_ec2.sh"
+                        """
+                    }
+                }
+            }
+        }
+
         stage('Sync Code to EC2') {
             steps {
                 script {
@@ -26,8 +118,9 @@ pipeline {
                         string(credentialsId: 'ec2-host-ip', variable: 'EC2_HOST'),
                         sshUserPrivateKey(credentialsId: 'ec2-docker-deploy', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')
                     ]) {
+                        // Ensure key file exists and has correct permissions
                         bat """
-                            powershell -Command "Copy-Item -Path '$SSH_KEY' -Destination 'temp_ssh_key.pem'"
+                            powershell -Command "if (-not (Test-Path 'temp_ssh_key.pem')) { Copy-Item -Path '$SSH_KEY' -Destination 'temp_ssh_key.pem' }"
                             powershell -Command "icacls 'temp_ssh_key.pem' /inheritance:r"
                             powershell -Command "icacls 'temp_ssh_key.pem' /grant:r 'SYSTEM:R' /grant:r 'Administrators:R'"
                         """
@@ -37,12 +130,19 @@ pipeline {
                             ssh -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "rm -rf ${APP_DIR}/* && mkdir -p ${APP_DIR}"
                         """
 
+                        // Create tar excluding .git and __pycache__ directories
                         bat "tar -czf molecules-app.tar.gz --exclude='.git' --exclude='__pycache__' ."
 
                         bat """
                             set SSH_AUTH_SOCK=
                             scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" molecules-app.tar.gz ${SSH_USER}@%EC2_HOST%:~/molecules-app.tar.gz
                             ssh -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "tar -xzf ~/molecules-app.tar.gz -C ${APP_DIR} && rm ~/molecules-app.tar.gz"
+                        """
+
+                        // Copy .dockerignore file separately to ensure it's present
+                        bat """
+                            set SSH_AUTH_SOCK=
+                            scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" .dockerignore ${SSH_USER}@%EC2_HOST%:${APP_DIR}/.dockerignore
                         """
 
                         bat """
@@ -97,10 +197,51 @@ cd ${APP_DIR}
 echo 'Listing contents of molecules directory:'
 ls -la
 
+# Check for Dockerfile
 if [ ! -f Dockerfile ]; then
   echo "ERROR: Dockerfile not found!"
   exit 1
 fi
+
+# Check for .dockerignore
+if [ ! -f .dockerignore ]; then
+  echo "WARNING: .dockerignore not found! Creating one..."
+  cat > .dockerignore << 'EOL'
+.git
+.git/
+.gitignore
+.gitattributes
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.log
+logs/
+temp_*
+node_modules/
+EOL
+fi
+
+# Check available disk space
+echo "Available disk space before build:"
+df -h
 
 # Try with sudo if direct docker command fails
 docker_cmd() {
@@ -110,16 +251,25 @@ docker_cmd() {
   fi
 }
 
+# Stop and remove existing container if it exists
 docker_cmd stop ${CONTAINER_NAME} || true
 docker_cmd rm ${CONTAINER_NAME} || true
 docker_cmd rmi ${DOCKER_IMAGE} || true
 
+# Build with limited context (avoid sending too many files to Docker daemon)
+echo "Building Docker image..."
 docker_cmd build --no-cache -t ${DOCKER_IMAGE}:latest .
 
+# Run container
+echo "Running container..."
 docker_cmd run -d --name ${CONTAINER_NAME} -p ${APP_PORT}:${APP_PORT} ${DOCKER_IMAGE}:latest
 
+# Verify container is running
+echo "Verifying container is running..."
 docker_cmd ps | grep ${CONTAINER_NAME} || echo "WARNING: Container not running!"
 
+# Show container logs
+echo "Container logs:"
 docker_cmd logs ${CONTAINER_NAME}
 """
 
@@ -184,7 +334,7 @@ docker_cmd logout
             echo "Deployment failed! Check the logs."
         }
         always {
-            // Fix the error in the PowerShell command with proper quoting and error handling
+            // Use single quotes for PowerShell command to avoid variable expansion issues
             bat '''
                 powershell -Command "if (Test-Path 'temp_ssh_key.pem') { Remove-Item -Path 'temp_ssh_key.pem' -Force -ErrorAction SilentlyContinue }"
             '''
