@@ -1,4 +1,4 @@
-# MoleculeInsight- A Web Tool for Mars and Molecules
+# MoleculeInsight- A Web Tool for Mars and Molecules V1
 
 A web tool for predicting molecular properties from chemical structures.
 
