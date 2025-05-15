@@ -33,7 +33,7 @@ pipeline {
                         
                         // Write the deployment script to a file
                         writeFile file: 'deploy_commands.sh', text: """#!/bin/bash
-cd ~/flask-app
+cd ~/molecules
 echo 'Building Docker image...'
 docker build -t ${DOCKER_IMAGE} .
 echo 'Stopping and removing existing container...'
@@ -126,5 +126,4 @@ docker logout
         }
     }
 }
-
 
