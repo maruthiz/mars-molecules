@@ -37,7 +37,7 @@ pipeline {
                             echo "Creating temporary key file with proper permissions"
                             powershell -Command "Copy-Item -Path '$SSH_KEY' -Destination 'temp_ssh_key.pem'"
                             powershell -Command "icacls 'temp_ssh_key.pem' /inheritance:r"
-                            powershell -Command "icacls 'temp_ssh_key.pem' /grant:r 'SYSTEM:R' /grant:r 'Administrators:R'"
+                            powershell -Command "icacls 'temp_ssh_key.pem' /grant:r 'SYSTEM:R' /grant:r 'Administrators:R' /grant:r '${env.COMPUTERNAME}\\Jenkins:F'"
                         """
                         
                         // Create a tar archive of the workspace
@@ -54,6 +54,11 @@ pipeline {
                             set SSH_AUTH_SOCK=
                             scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" molecules-app.tar.gz ${SSH_USER}@%EC2_HOST%:~/molecules-app.tar.gz
                             ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "tar -xzf ~/molecules-app.tar.gz -C ${APP_DIR} && rm ~/molecules-app.tar.gz"
+                        """
+                        
+                        // Close any file handles that might be using the key file
+                        bat """
+                            powershell -Command "Start-Sleep -s 2"
                         """
                     }
                 }
@@ -86,6 +91,11 @@ echo 'Container started successfully!'
                             scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" deploy_commands.sh ${SSH_USER}@%EC2_HOST%:~/deploy_commands.sh
                             ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "chmod +x ~/deploy_commands.sh && ~/deploy_commands.sh"
                         """
+                        
+                        // Close any file handles that might be using the key file
+                        bat """
+                            powershell -Command "Start-Sleep -s 2"
+                        """
                     }
                 }
             }
@@ -116,10 +126,11 @@ docker logout
                             scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" push_commands.sh ${SSH_USER}@%EC2_HOST%:~/push_commands.sh
                             ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "chmod +x ~/push_commands.sh && ~/push_commands.sh"
                         """
-
-                        // Clean up the temporary key file
+                        
+                        // Close any file handles and try to delete the file with enhanced permissions
                         bat """
-                            powershell -Command "Remove-Item -Path 'temp_ssh_key.pem' -Force"
+                            powershell -Command "Start-Sleep -s 5"
+                            powershell -Command "if (Test-Path 'temp_ssh_key.pem') { try { [System.IO.File]::SetAttributes('temp_ssh_key.pem', [System.IO.FileAttributes]::Normal); Remove-Item -Path 'temp_ssh_key.pem' -Force -ErrorAction SilentlyContinue } catch { Write-Host 'Could not delete file, will be handled in post actions' } }"
                         """
                     }
                 }
@@ -146,11 +157,15 @@ docker logout
             }
         }
         always {
-            // Clean up temporary files before cleaning workspace
+            // Clean up temporary files before cleaning workspace with improved error handling
             bat """
-                powershell -Command "if (Test-Path 'temp_ssh_key.pem') { Remove-Item -Path 'temp_ssh_key.pem' -Force }"
+                powershell -Command "if (Test-Path 'temp_ssh_key.pem') { try { Start-Sleep -s 2; [System.IO.File]::SetAttributes('temp_ssh_key.pem', [System.IO.FileAttributes]::Normal); Remove-Item -Path 'temp_ssh_key.pem' -Force -ErrorAction SilentlyContinue } catch { Write-Host 'Failed to remove temp_ssh_key.pem but continuing cleanup' } }"
+                powershell -Command "if (Test-Path 'deploy_commands.sh') { Remove-Item -Path 'deploy_commands.sh' -Force -ErrorAction SilentlyContinue }"
+                powershell -Command "if (Test-Path 'push_commands.sh') { Remove-Item -Path 'push_commands.sh' -Force -ErrorAction SilentlyContinue }"
+                powershell -Command "if (Test-Path 'molecules-app.tar.gz') { Remove-Item -Path 'molecules-app.tar.gz' -Force -ErrorAction SilentlyContinue }"
             """
-            cleanWs()
+            cleanWs(disableDeferredWipeout: true, deleteDirs: true)
         }
     }
 }
+
