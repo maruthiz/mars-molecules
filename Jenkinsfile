@@ -37,7 +37,7 @@ pipeline {
                             echo "Creating temporary key file with proper permissions"
                             powershell -Command "Copy-Item -Path '$SSH_KEY' -Destination 'temp_ssh_key.pem'"
                             powershell -Command "icacls 'temp_ssh_key.pem' /inheritance:r"
-                            powershell -Command "icacls 'temp_ssh_key.pem' /grant:r 'SYSTEM:R' /grant:r 'Administrators:R' /grant:r '${env.USERNAME}:R'"
+                            powershell -Command "icacls 'temp_ssh_key.pem' /grant:r 'SYSTEM:R' /grant:r 'Administrators:R'"
                         """
                         
                         // Create a tar archive of the workspace
@@ -148,9 +148,7 @@ docker logout
         always {
             // Clean up temporary files before cleaning workspace
             bat """
-                if exist temp_ssh_key.pem (
-                    powershell -Command "Remove-Item -Path 'temp_ssh_key.pem' -Force -ErrorAction SilentlyContinue"
-                )
+                powershell -Command "if (Test-Path 'temp_ssh_key.pem') { Remove-Item -Path 'temp_ssh_key.pem' -Force }"
             """
             cleanWs()
         }
