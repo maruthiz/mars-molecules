@@ -22,7 +22,7 @@ pipeline {
         stage('Prepare Files') {
             steps {
                 // Create .dockerignore file to exclude unnecessary files from Docker build context
-                writeFile file: '.dockerignore', text: """\
+                writeFile file: '.dockerignore', text: """
 .git
 .git/
 .gitignore
@@ -213,7 +213,7 @@ if [ ! -f .dockerignore ]; then
 .gitattributes
 __pycache__/
 *.py[cod]
-*\\$py.class
+*\$py.class
 *.so
 .Python
 build/
