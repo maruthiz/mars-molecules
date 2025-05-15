@@ -32,10 +32,12 @@ pipeline {
                         string(credentialsId: 'ec2-host-ip', variable: 'EC2_HOST'),
                         sshUserPrivateKey(credentialsId: 'ec2-docker-deploy', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')
                     ]) {
-                        // Fix SSH key permissions (Windows safe)
+                        // Create a temporary key file with proper permissions
                         bat """
-                            powershell -Command "icacls '$SSH_KEY' /inheritance:r"
-                            powershell -Command "icacls '$SSH_KEY' /grant:r 'SYSTEM:F' /grant:r 'Administrators:F'"
+                            echo "Creating temporary key file with proper permissions"
+                            powershell -Command "Copy-Item -Path '$SSH_KEY' -Destination 'temp_ssh_key.pem'"
+                            powershell -Command "icacls 'temp_ssh_key.pem' /inheritance:r"
+                            powershell -Command "icacls 'temp_ssh_key.pem' /grant:r 'SYSTEM:R' /grant:r 'Administrators:R' /grant:r '${env.USERNAME}:R'"
                         """
                         
                         // Create a tar archive of the workspace
@@ -44,14 +46,14 @@ pipeline {
                         // Ensure the target directory exists on EC2
                         bat """
                             set SSH_AUTH_SOCK=
-                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "${SSH_KEY}" ${SSH_USER}@%EC2_HOST% "mkdir -p ${APP_DIR}"
+                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "mkdir -p ${APP_DIR}"
                         """
                         
                         // Transfer the archive to EC2 and extract it
                         bat """
                             set SSH_AUTH_SOCK=
-                            scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" molecules-app.tar.gz ${SSH_USER}@%EC2_HOST%:~/molecules-app.tar.gz
-                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "${SSH_KEY}" ${SSH_USER}@%EC2_HOST% "tar -xzf ~/molecules-app.tar.gz -C ${APP_DIR} && rm ~/molecules-app.tar.gz"
+                            scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" molecules-app.tar.gz ${SSH_USER}@%EC2_HOST%:~/molecules-app.tar.gz
+                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "tar -xzf ~/molecules-app.tar.gz -C ${APP_DIR} && rm ~/molecules-app.tar.gz"
                         """
                     }
                 }
@@ -81,8 +83,8 @@ echo 'Container started successfully!'
                         // Transfer deployment script and execute it
                         bat """
                             set SSH_AUTH_SOCK=
-                            scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" deploy_commands.sh ${SSH_USER}@%EC2_HOST%:~/deploy_commands.sh
-                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "${SSH_KEY}" ${SSH_USER}@%EC2_HOST% "chmod +x ~/deploy_commands.sh && ~/deploy_commands.sh"
+                            scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" deploy_commands.sh ${SSH_USER}@%EC2_HOST%:~/deploy_commands.sh
+                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "chmod +x ~/deploy_commands.sh && ~/deploy_commands.sh"
                         """
                     }
                 }
@@ -111,8 +113,13 @@ docker logout
                         // Transfer push script and execute it
                         bat """
                             set SSH_AUTH_SOCK=
-                            scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" push_commands.sh ${SSH_USER}@%EC2_HOST%:~/push_commands.sh
-                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "${SSH_KEY}" ${SSH_USER}@%EC2_HOST% "chmod +x ~/push_commands.sh && ~/push_commands.sh"
+                            scp -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" push_commands.sh ${SSH_USER}@%EC2_HOST%:~/push_commands.sh
+                            ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "chmod +x ~/push_commands.sh && ~/push_commands.sh"
+                        """
+
+                        // Clean up the temporary key file
+                        bat """
+                            powershell -Command "Remove-Item -Path 'temp_ssh_key.pem' -Force"
                         """
                     }
                 }
@@ -139,6 +146,12 @@ docker logout
             }
         }
         always {
+            // Clean up temporary files before cleaning workspace
+            bat """
+                if exist temp_ssh_key.pem (
+                    powershell -Command "Remove-Item -Path 'temp_ssh_key.pem' -Force -ErrorAction SilentlyContinue"
+                )
+            """
             cleanWs()
         }
     }
