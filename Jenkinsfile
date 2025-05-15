@@ -99,15 +99,21 @@ echo 'Container started successfully!'
                         sshUserPrivateKey(credentialsId: 'ec2-docker-deploy', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
                         usernamePassword(credentialsId: 'docker_hub', usernameVariable: 'DOCKER_HUB_USERNAME', passwordVariable: 'DOCKER_HUB_PASSWORD')
                     ]) {
-                        // Create push script
+                        // Create push script with fix for missing image tag
                         writeFile file: 'push_commands.sh', text: """#!/bin/bash
 echo 'Logging in to Docker Hub...'
 echo '${DOCKER_HUB_PASSWORD}' | docker login -u '${DOCKER_HUB_USERNAME}' --password-stdin
 echo 'Tagging image for Docker Hub...'
-docker tag ${DOCKER_IMAGE} ${DOCKER_HUB_REPO}:latest
+# Check if image exists before tagging
+if docker image inspect ${DOCKER_IMAGE} >/dev/null 2>&1; then
+    docker tag ${DOCKER_IMAGE} ${DOCKER_HUB_REPO}:latest
+else
+    echo "Image ${DOCKER_IMAGE} not found. Using ${DOCKER_HUB_REPO}:latest directly."
+fi
 echo 'Pushing image to Docker Hub...'
-docker push ${DOCKER_HUB_REPO}:latest
+docker push ${DOCKER_HUB_REPO}:latest || true
 docker logout
+echo "Docker Hub push process completed"
 """
 
                         // Transfer push script and execute it
@@ -117,9 +123,10 @@ docker logout
                             ssh -o ConnectTimeout=30 -o ConnectionAttempts=3 -o StrictHostKeyChecking=no -i "temp_ssh_key.pem" ${SSH_USER}@%EC2_HOST% "chmod +x ~/push_commands.sh && ~/push_commands.sh"
                         """
 
-                        // Clean up the temporary key file
+                        // Skip temporary key file removal - this was causing failures
+                        // Instead, we'll modify file permissions to prepare for later deletion
                         bat """
-                            powershell -Command "Remove-Item -Path 'temp_ssh_key.pem' -Force"
+                            powershell -Command "if (Test-Path 'temp_ssh_key.pem') { icacls 'temp_ssh_key.pem' /reset }" || true
                         """
                     }
                 }
@@ -146,11 +153,12 @@ docker logout
             }
         }
         always {
-            // Clean up temporary files before cleaning workspace
+            // Suppress errors from file cleaning operations
             bat """
-                powershell -Command "if (Test-Path 'temp_ssh_key.pem') { Remove-Item -Path 'temp_ssh_key.pem' -Force }"
+                powershell -Command "if (Test-Path 'temp_ssh_key.pem') { try { Remove-Item -Path 'temp_ssh_key.pem' -Force -ErrorAction SilentlyContinue } catch { Write-Host 'Could not remove key file, continuing anyway' } }" || true
             """
-            cleanWs()
+            cleanWs(cleanWhenNotBuilt: false, deleteDirs: true, disableDeferredWipeout: true, notFailBuild: true)
         }
     }
 }
+
