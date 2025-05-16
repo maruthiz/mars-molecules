@@ -106,17 +106,21 @@ df -h
                         writeFile file: 'deploy_commands.sh', text: """#!/bin/bash
 set -e  # Exit on any error
 
-# Check if repository directory exists, if not clone it
-if [ ! -d "~/molecules" ]; then
-  echo "Cloning repository..."
-  git clone https://github.com/maruthiz/mars-molecules.git ~/molecules
-else
+# Proper path handling for the molecules directory
+REPO_DIR="\$HOME/molecules"
+
+# Check if repository directory exists, if so update it, otherwise clone
+if [ -d "\$REPO_DIR" ]; then
   echo "Repository exists, pulling latest changes..."
-  cd ~/molecules
-  git pull
+  cd "\$REPO_DIR"
+  git fetch origin
+  git reset --hard origin/main
+else
+  echo "Cloning repository..."
+  git clone https://github.com/maruthiz/mars-molecules.git "\$REPO_DIR"
 fi
 
-cd ~/molecules
+cd "\$REPO_DIR"
 echo 'Building Docker image from Dockerfile...'
 # Log the directory contents for debugging
 echo "Contents of directory:"
