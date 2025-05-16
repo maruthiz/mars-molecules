@@ -1,6 +1,7 @@
 pipeline {
     agent any
     
+    // Environment variables that control resource usage and optimization
     environment {
         // EC2 connection details
         EC2_USER = 'ubuntu'
@@ -16,6 +17,9 @@ pipeline {
         
         // Build information
         BUILD_NUMBER = "${env.BUILD_NUMBER}"
+        
+        // Optimization flags
+        DOCKER_BUILDKIT = '1' // Enable BuildKit for more efficient builds
     }
     
     stages {
@@ -40,37 +44,40 @@ echo 'Cleaning up disk space...'
 echo 'Current disk usage before cleanup:'
 df -h
 
-# Remove any existing molecular-property-app containers
-echo 'Removing existing containers...'
-if [ \$(docker ps -a -q -f name=${CONTAINER_NAME} | wc -l) -gt 0 ]; then
-  docker stop ${CONTAINER_NAME} || true
-  docker rm ${CONTAINER_NAME} || true
-  echo 'Existing containers removed.'
-fi
+# Stop and remove all running containers
+echo 'Removing ALL existing containers...'
+docker stop \$(docker ps -a -q) 2>/dev/null || true
+docker rm \$(docker ps -a -q) 2>/dev/null || true
 
-# Remove any existing molecular-property-app images
-echo 'Removing existing images...'
-if [ \$(docker images -q ${DOCKER_IMAGE} | wc -l) -gt 0 ]; then
-  docker rmi ${DOCKER_IMAGE} || true
-  echo 'Existing images removed.'
-fi
+# Remove ALL images
+echo 'Removing ALL existing images...'
+docker rmi \$(docker images -q) -f 2>/dev/null || true
 
-# Remove dangling images and volumes
-echo 'Removing dangling images and volumes...'
-docker image prune -f
-docker volume prune -f
-
-# Remove unused Docker resources
-echo 'Removing unused Docker resources...'
+# Prune everything in Docker
+echo 'Aggressive Docker pruning...'
 docker system prune -af --volumes
 
-# Clean up apt cache
-echo 'Cleaning apt cache...'
-sudo apt-get clean
-
-# Remove old logs
-echo 'Removing old logs...'
+# Clean up logs more aggressively
+echo 'Cleaning up logs...'
+sudo find /var/log -type f -name "*.log" -exec truncate -s 0 {} \\;
 sudo find /var/log -type f -name "*.gz" -delete
+
+# Clean package manager caches
+echo 'Cleaning package manager caches...'
+sudo apt-get clean
+sudo apt-get autoremove -y
+
+# Clean up /tmp
+echo 'Cleaning /tmp directory...'
+sudo rm -rf /tmp/*
+
+# If git repository exists, clean it
+if [ -d "\$HOME/molecules" ]; then
+  echo "Cleaning git repository..."
+  cd "\$HOME/molecules"
+  git clean -fdx
+  git gc --aggressive --prune=all
+fi
 
 echo 'Current disk usage after cleanup:'
 df -h
@@ -113,11 +120,16 @@ REPO_DIR="\$HOME/molecules"
 if [ -d "\$REPO_DIR" ]; then
   echo "Repository exists, pulling latest changes..."
   cd "\$REPO_DIR"
+  
+  # Clean repository to minimize space usage
+  git clean -fdx  # Remove all untracked files
+  git reset --hard HEAD  # Reset any local changes
   git fetch origin
   git reset --hard origin/main
 else
   echo "Cloning repository..."
-  git clone https://github.com/maruthiz/mars-molecules.git "\$REPO_DIR"
+  # Shallow clone with depth=1 to save disk space
+  git clone --depth=1 https://github.com/maruthiz/mars-molecules.git "\$REPO_DIR"
 fi
 
 cd "\$REPO_DIR"
@@ -126,14 +138,29 @@ echo 'Building Docker image from Dockerfile...'
 echo "Contents of directory:"
 ls -la
 
+# Create a .dockerignore file to exclude unnecessary files
+echo "Creating .dockerignore to reduce context size..."
+cat > .dockerignore << EOF
+.git
+.gitignore
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+**/.DS_Store
+**/README.md
+**/LICENSE
+EOF
+
 # Verify Dockerfile exists
 if [ ! -f "Dockerfile" ]; then
   echo "ERROR: Dockerfile not found!"
   exit 1
 fi
 
-# Build with no-cache to ensure fresh build
-docker build --no-cache -t ${DOCKER_IMAGE} . || { echo "Docker build failed"; exit 1; }
+# Build with optimizations to reduce space usage
+echo "Building Docker image with space optimizations..."
+docker build --no-cache --force-rm --compress -t ${DOCKER_IMAGE} . || { echo "Docker build failed"; exit 1; }
 
 echo 'Removing any existing containers with the same name...'
 # Check if container exists before trying to stop/remove
@@ -148,6 +175,10 @@ echo 'Starting new container...'
 docker run -d --name ${CONTAINER_NAME} -p ${APP_PORT}:${APP_PORT} ${DOCKER_IMAGE} || { echo "Failed to start container"; exit 1; }
 echo 'Container started successfully!'
 
+# Clean up build artifacts to save space
+echo "Cleaning up build artifacts..."
+docker system prune -f
+
 # Verify container is running
 if [ \$(docker ps -q -f name=${CONTAINER_NAME} | wc -l) -eq 0 ]; then
     echo "Container failed to start properly"
@@ -158,6 +189,10 @@ fi
 # Display container information
 echo "Container information:"
 docker ps -a | grep ${CONTAINER_NAME}
+
+# Show disk usage after deployment
+echo "Disk usage after deployment:"
+df -h
 """
                         
                         // Transfer the script with binary mode to preserve line endings
